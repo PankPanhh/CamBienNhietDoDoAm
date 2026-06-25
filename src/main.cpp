@@ -17,7 +17,7 @@ IPAddress gateway(192, 168, 31, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8); 
 
-String version = "1.0.0";
+String version = "3.0.0"; // Phiên bản phần mềm
 
 #define DHTPIN 5    // Chân D1 trên WeMos D1 mini
 
@@ -68,6 +68,8 @@ String last_ac_action = "18";
 
 unsigned long lastMqttPbMillis = 0;
 unsigned long lastMqttReMillis = 0;
+
+
 PubSubClient mqttClient(espClient);
 
 #define SMTP_HOST "smtp.gmail.com"
@@ -89,6 +91,7 @@ unsigned long lastApiMillis = 0;
 unsigned long mqtt_interval = 10000;
 
 unsigned long lastSensorMillis = 0; // Thêm biến quản lý thời gian đọc cảm biến riêng
+
 long lastMsg = 0;
 String ip = "";
 
@@ -200,45 +203,34 @@ void loadConfiguration() {
 
 void setup_wifi(){
   WiFi.mode(WIFI_STA);
+  
+  // Kiểm tra cấu hình trong bộ nhớ LittleFS
   if(wifi_ssid != "" && wifi_pass != "Juniper_Secured") {
     WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
     sendLog("[WiFi] Dang ket noi vao cấu hình luu trong LittleFS: " + wifi_ssid);
-  } else {
-    IPAddress local_IP(192, 168, 31, 130);
-    IPAddress gateway(192, 168, 31, 1);
-    IPAddress subnet(255, 255, 255, 0);
-    WiFi.config(local_IP, gateway, subnet, gateway);
+  } 
+  else {
+    // Không khai báo lại IPAddress, sử dụng trực tiếp các biến toàn cục từ đầu file
+    WiFi.config(local_IP, gateway, subnet, primaryDNS); 
     WiFi.begin("Juniper_Secured", "vs353535");
-    sendLog("[WiFi] Dang ket noi vao WiFi mac dinh: Juniper_Secured");
+    sendLog("[WiFi] Dang ket noi vao WiFi mac dinh (IP Tĩnh): Juniper_Secured");
   }
 
-  // WiFi.begin(wifi_ssid, wifi_pass);
-
-  // Serial.println("Connecting to WiFi...");
-  // Serial.print(wifi_ssid);
-
-  // giới hạn thời gian chờ tối đa 10s
+  // Giới hạn thời gian chờ tối đa kết nối
   int timeout = 0;
-  while (WiFi.status() != WL_CONNECTED && timeout < 20) { // 20 * 500ms = 10s
+  while (WiFi.status() != WL_CONNECTED && timeout < 40) { // Tăng lên 40 (20s) để mạch kịp nhận IP
     delay(500);
     Serial.print(".");
     timeout++;
   }
 
   if(WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi connected successfully." + WiFi.localIP().toString());
+    // SỬA LỖI EXCEPTION (28): Dùng lệnh in nối chuỗi an toàn thay vì toán tử cộng đối tượng tạm thời
+    Serial.print("\nWiFi connected successfully. IP thuc te: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\n[WiFi] Khong ket noi duoc WiFi. Mach hoat dong che do Offline.");
   }
-
-  // randomSeed(micros());
-  // if (WiFi.status() != WL_CONNECTED) {
-  //   Serial.println("\nFailed to connect to WiFi. Please check your credentials and network.");
-  //   Serial.println("Rebooting in 5 seconds...");
-  //   return;
-  // }else {
-  //   Serial.println("\nWiFi connected successfully.");
-  //   Serial.print("IP address: ");
-  //   Serial.println(WiFi.localIP());
-  // }
 }
 
 void handleWifiScan(){
@@ -457,6 +449,8 @@ void handleData() {
 
   json += ",\"cfg_mqtt_interval\":" + String(mqtt_interval / 1000);
   json += ",\"cfg_api_interval\":"  + String(api_interval  / 1000);
+
+  json += ",\"version\":\"" + version + "\"";
   json += "}";
 
   server.send(200, "application/json; charset=utf-8", json);
@@ -639,7 +633,10 @@ void setup()
   webSocket.onEvent(onWebSocketEvent);
 
   Serial.println("HTTP Web Server da khoi dong tai dia chi:");
-  Serial.printf("http://%s:8080\n (OTA)", WiFi.localIP().toString().c_str());
+  String currentIP = WiFi.localIP().toString();
+  Serial.print("http://" + currentIP + ":8080 | Phiên bản: " + version + "\n");
+  
+  // Serial.printf("http://%s:8080\n | Phiên bản: %s\n", WiFi.localIP().toString().c_str());
 }
 
 
@@ -728,12 +725,17 @@ void loop() {
     lastMsg = currentMillis;
     int Qal = getQuality();
     if(WiFi.status() == WL_CONNECTED) {
-      Serial.printf("Log -> Mạng: OK (%d%%) | T: %.1f *C | H: %.1f %% | Thresh_T: %.1f | Thresh_H: %.1f\n", 
-                    Qal, t, h, t_warning, h_warning);
+      Serial.printf("[WIFI: %3d%%] | TEMP: %5.1f°C (Ngưỡng: %5.1f°C) | HUMI: %5.1f%% (Ngưỡng: %5.1f%%)\n", 
+              getQuality(), t, t_warning, h, h_warning);
     } else {
       Serial.printf("Log -> Đang mất mạng WiFi! Mạch vẫn chạy Offline | T: %.1f *C | H: %.1f %%\n", t, h);
     }
-    sendLog("Log -> RSSI: " + String(WiFi.RSSI()) + " dBm | T: " + String(t, 1) + " *C | H: " + String(h, 1) + " %");
-    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+
+    char webLogBuf[128];
+    snprintf(webLogBuf, sizeof(webLogBuf), "[WIFI: %3d%%] | TEMP: %5.1f°C (Ngưỡng: %5.1f°C) | HUMI: %5.1f%% (Ngưỡng: %5.1f%%)", 
+              Qal, t, t_warning, h, h_warning);
+    sendLog(String(webLogBuf));
+    // sendLog("Log -> RSSI: " + String(WiFi.RSSI()) + " dBm | T: " + String(t, 1) + " *C | H: " + String(h, 1) + " %");
+    // digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 }

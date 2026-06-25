@@ -8,6 +8,7 @@
 #include <ESP_Mail_Client.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
+#include <ElegantOTA.h>
 
 #include <PubSubClient.h>
 
@@ -15,6 +16,8 @@ IPAddress local_IP(192, 168, 31,130);
 IPAddress gateway(192, 168, 31, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8); 
+
+String version = "1.0.0";
 
 #define DHTPIN 5    // Chân D1 trên WeMos D1 mini
 
@@ -79,7 +82,11 @@ SMTPSession smtp;
 char msg[MSG_BUFFER_SIZE];
 unsigned long previousMillis = 0;
 unsigned long reconnectInterval = 10000; // Thời gian chờ trước khi thử kết nối lại WiFi
-// unsigned long interval = 30000;
+
+unsigned long api_interval = 10000; 
+unsigned long lastApiMillis = 0; 
+
+unsigned long mqtt_interval = 10000;
 
 unsigned long lastSensorMillis = 0; // Thêm biến quản lý thời gian đọc cảm biến riêng
 long lastMsg = 0;
@@ -134,6 +141,8 @@ void loadConfiguration() {
   //   sendLog("[Config] Da nap thong so MQTT: " + mqtt_broker);
   // }
 
+  
+
   if (doc.containsKey("alert")) {
     t_min = doc["alert"]["t_min"].as<float>();
     t_max = doc["alert"]["t_max"].as<float>();
@@ -141,6 +150,11 @@ void loadConfiguration() {
     h_max = doc["alert"]["h_max"].as<float>();
     t_warning = t_max; // Gán đồng bộ cho luồng gửi email cũ
     h_warning = h_max;
+  }
+
+  if(doc.containsKey("timer")) {
+    mqtt_interval = doc["timer"]["mqtt_interval"].as<unsigned long>() * 1000; // Chuyển sang mili giây
+    api_interval = doc["timer"]["api_interval"].as<unsigned long>() * 1000; // Chuyển sang mili giây
   }
 }
 
@@ -285,6 +299,9 @@ void handleWifiSave() {
   if (server.hasArg("h_min")) h_min = server.arg("h_min").toFloat();
   if (server.hasArg("h_max")) h_max = server.arg("h_max").toFloat();
   
+  if (server.hasArg("mqtt_int")) mqtt_interval = (unsigned long)server.arg("mqtt_int").toInt() * 1000; // SỬA: từ "interval" thành "mqtt_int"
+  if (server.hasArg("api_int")) api_interval = (unsigned long)server.arg("api_int").toInt() * 1000;
+  
   t_warning = t_max; 
   h_warning = h_max;
 
@@ -296,6 +313,9 @@ void handleWifiSave() {
   doc["alert"]["t_max"] = t_max;
   doc["alert"]["h_min"] = h_min;
   doc["alert"]["h_max"] = h_max;
+
+  doc["timer"]["mqtt_interval"] = mqtt_interval / 1000; // Lưu chu kỳ MQTT dưới dạng giây
+  doc["timer"]["api_interval"] = api_interval / 1000; // Lưu
 
   File wFile = LittleFS.open("/config.json", "w");
   if (!wFile) {
@@ -434,6 +454,9 @@ void handleData() {
   json += "\"cfg_mq_user\":\"" + mqtt_user + "\",";
   json += "\"cfg_mq_pass\":\"" + mqtt_pass + "\",";
   json += "\"cfg_mq_topic\":\"" + mqtt_topic + "\""; 
+
+  json += ",\"cfg_mqtt_interval\":" + String(mqtt_interval / 1000);
+  json += ",\"cfg_api_interval\":"  + String(api_interval  / 1000);
   json += "}";
 
   server.send(200, "application/json; charset=utf-8", json);
@@ -516,6 +539,68 @@ void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t leng
   }
 }
 
+void callAPI(){
+  if(WiFi.status() != WL_CONNECTED) return;
+  if(isnan(t) || isnan(h)){
+    sendLog("[API] -> Cảnh báo: Dữ liệu cảm biến không hợp lệ. Không gọi API.");
+    return;
+  }
+
+  WiFiClient apiclient;
+  String host = "192.168.1.13";
+  String url = "/test/arduino/inserttempandhump"
+             "?temp=" + String(t, 1) +
+             "&hum="  + String(h, 1) +
+             "&ip_machine=" + WiFi.localIP().toString();
+  if (!apiclient.connect(host.c_str(), 80)) {
+    sendLog("[API] -> Khong the ket noi den API: " + host); 
+    return;
+  }
+
+  apiclient.print(String("GET ") + url + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Connection: close\r\n\r\n");
+
+  unsigned long t0 = millis();
+  while (apiclient.available() == millis() - t0 < 2000) delay(10);
+
+  String statusLine = apiclient.readStringUntil('\n');
+  sendLog("[API] -> Da goi API: " + url + " | Trang thai: " + statusLine);
+  apiclient.stop();
+}
+
+void handleSetMqttInterval(){
+  if (!server.hasArg("interval")) {
+    server.send(400, "text/plain", "Thieu tham so: interval (don vi: giay)");
+    return;
+  }
+  int sec = server.arg("interval").toInt();
+  if (sec < 1 || sec > 3600) {
+    server.send(400, "text/plain", "Gia tri interval phai tu 1 den 3600 giay");
+    return;
+  }
+
+  mqtt_interval = (unsigned long)sec * 1000; // Chuyển sang mili giây
+  sendLog("[MQTT] -> Da cap nhat khoang thoi gian publish: " + String(sec) + " giay");
+  server.send(200, "text/plain", "OK");
+}
+
+  void handleSetApiInterval() {
+    if (!server.hasArg("interval")) {
+      server.send(400, "text/plain", "Thieu tham so: interval (don vi: giay)");
+      return;
+    }
+    int sec = server.arg("interval").toInt();
+    if (sec < 1 || sec > 3600) {
+      server.send(400, "text/plain", "Gia tri interval phai tu 1 den 3600 giay");
+      return;
+    }
+
+    api_interval = (unsigned long)sec * 1000; // Chuyển sang mili giây
+    sendLog("[API] -> Da cap nhat khoang thoi gian goi API: " + String(sec) + " giay");
+    server.send(200, "text/plain", "OK");
+  }
+
 void setup() 
 {
   Serial.begin(9600); 
@@ -543,14 +628,18 @@ void setup()
     delay(1000);
     ESP.restart();
   });
+  server.on("/set_mqtt_interval", HTTP_POST, handleSetMqttInterval);
+  server.on("/set_api_interval", HTTP_POST, handleSetApiInterval);
   server.onNotFound(handleRoot);
+  ElegantOTA.begin(&server); // Bắt đầu ElegantOTA với server ESP8266WebServer
+  ElegantOTA.setAuth("itminh", "samho2024@"); // Tùy chọn: đặt tên người dùng và mật khẩu cho OTA
   server.begin();
 
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
 
   Serial.println("HTTP Web Server da khoi dong tai dia chi:");
-  Serial.printf("http://%s:8080\n", WiFi.localIP().toString().c_str());
+  Serial.printf("http://%s:8080\n (OTA)", WiFi.localIP().toString().c_str());
 }
 
 
@@ -558,6 +647,7 @@ void loop() {
   // 1. Luôn lắng nghe trình duyệt truy cập
   server.handleClient();
   webSocket.loop(); // Lắng nghe các kết nối WebSocket
+  ElegantOTA.loop();
   unsigned long currentMillis = millis();
 
 
@@ -622,9 +712,15 @@ void loop() {
     }
   }
 
-  if (mqttClient.connected() && (currentMillis - lastMqttPbMillis >= 5000)) {
+  if (mqttClient.connected() && (currentMillis - lastMqttPbMillis >= mqtt_interval)) {
     lastMqttPbMillis = currentMillis;
     publishSensorData();
+  }
+
+  // GỌI HTTP API ĐỊNH KỲ
+  if (WiFi.status() == WL_CONNECTED && (currentMillis - lastApiMillis >= api_interval)) {
+    lastApiMillis = currentMillis;
+    callAPI();
   }
 
   // 4. In log lên Serial Monitor định kỳ 1 giây để theo dõi

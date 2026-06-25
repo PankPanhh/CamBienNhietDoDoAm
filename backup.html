@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP8266 CONTROL</title>
+    <style>
+        body { font-family: sans-serif; background: #1e293b; color: #fff; margin: 10px; padding: 0; display: flex; justify-content: center; }
+        .box { width: 100%; max-width: 420px; background: #0f172a; padding: 15px; border-radius: 8px; }
+        .title { text-align: center; color: #38bdf8; font-size: 16px; font-weight: bold; margin: 0 0 10px 0; }
+        .nav { display: flex; gap: 5px; margin-bottom: 15px; }
+        .btn { flex: 1; background: #334155; color: #fff; border: 0; padding: 8px; border-radius: 4px; font-weight: bold; cursor: pointer; font-size: 12px;}
+        .btn.active { background: #38bdf8; color: #000; }
+        .page { display: none; } .page.active { display: block; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 10px; }
+        .card { background: #1e293b; padding: 8px; border-radius: 4px; font-size: 11px; text-align: center; }
+        .card span { color: #94a3b8; display: block; font-size: 10px; }
+        .console { background: #000; height: 130px; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; color: #0f6; overflow-y: auto; border: 1px solid #334155; }
+        
+        .section-title { color: #38bdf8; font-size: 13px; font-weight: bold; margin: 15px 0 8px 0; border-bottom: 1px dashed #475569; padding-bottom: 3px; text-transform: uppercase; }
+        .row { display: flex; flex-direction: column; margin-bottom: 8px; font-size: 12px; }
+        .row label { color: #94a3b8; margin-bottom: 3px; }
+        input, select { padding: 6px; border: 1px solid #475569; background: #0f172a; color: #fff; border-radius: 4px; font-size: 13px; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .btn-cmd { width: 100%; color: #fff; border: 0; padding: 8px; border-radius: 4px; font-weight: bold; cursor: pointer; margin-bottom: 6px; font-size: 12px; }
+        .info-block { font-size: 12px; background: #1e293b; padding: 8px; border-radius: 4px; margin-bottom: 10px; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <div class="title">NHIỆT ĐỘ & ĐỘ ẨM</div>
+    
+    <div class="nav">
+        <button class="btn active" onclick="chgPage(this, 'p-mon')">GIÁM SÁT</button>
+        <button class="btn" onclick="chgPage(this, 'p-set')">THIẾT LẬP</button>
+    </div>
+
+    <div id="p-mon" class="page active">
+        <div class="grid">
+            <div class="card"><span>WiFi</span><b id="wf">--</b></div>
+            <div class="card"><span>RAM</span><b id="ram">--</b></div>
+            <div class="card"><span>LittleFS</span><b id="fs">--</b></div>
+        </div>
+        <div class="grid" style="grid-template-columns: 1fr 1fr;">
+            <div class="card" style="border-left: 3px solid #f43f5e;"><span>Nhiệt độ</span><b id="t-dis" style="color:#f43f5e; font-size:14px;">-- °C</b></div>
+            <div class="card" style="border-left: 3px solid #06b6d4;"><span>Độ ẩm</span><b id="h-dis" style="color:#06b6d4; font-size:14px;">-- %</b></div>
+        </div>
+        <div class="console" id="log_box">Đang đợi luồng log dữ liệu...</div>
+    </div>
+
+    <div id="p-set" class="page">
+        
+        <div class="section-title">[ WIFI ]</div>
+        <div class="info-block">
+            <div>SSID   : <span id="cur_ssid" style="color:#38bdf8">--</span></div>
+            <div>IP     : <span id="cur_ip">--</span></div>
+            <div>RSSI   : <span id="cur_rssi">--</span></div>
+            <div>Status : <span id="cur_status" style="color:#10b981">--</span></div>
+        </div>
+        
+        <div class="row">
+            <label>Available Networks (Chọn mạng hoặc điền dưới nếu ẩn)</label>
+            <select id="wifi_select" onchange="document.getElementById('wf_ssid').value = this.value">
+                <option value="">-- Bấm quét mạng mạng bên dưới --</option>
+            </select>
+            <button type="button" style="margin-top:4px; padding:3px; font-size:11px;" onclick="scanWifi()">🔄 Quét WiFi Khả Dụng</button>
+        </div>
+        <div class="row"><label>SSID (Nhập thủ công mạng ẩn)</label><input type="text" id="wf_ssid" placeholder="Enter WiFi SSID"></div>
+        
+        <div class="row">
+            <label>Password</label>
+            <div style="display: flex; gap:4px;">
+                <input type="password" id="wf_pass" placeholder="Enter WiFi Password" style="flex:1;">
+                <button type="button" onclick="togglePass('wf_pass', this)" style="background:#475569; color:#fff; border:0; border-radius:4px; width:50px; font-size:11px;">Show</button>
+            </div>
+        </div>
+        <button class="btn-cmd" style="background: #2563eb;" onclick="testConnection()">[ TEST CONNECTION ]</button>
+        <div id="test_result" style="font-size:12px; font-weight:bold; text-align:center; margin-bottom:10px;"></div>
+
+        <div class="section-title">[ MQTT ]</div>
+        <div class="row"><label>Broker</label><input type="text" id="mq_broker" placeholder="broker.hivemq.com"></div>
+        <div class="row"><label>Port</label><input type="number" id="mq_port" value="1883"></div>
+        <div class="row"><label>Username</label><input type="text" id="mq_user"></div>
+        <div class="row"><label>Password</label><input type="password" id="mq_secure_pass"></div>
+        <div class="row"><label>Topic</label><input type="text" id="mq_topic" placeholder="esp8266/data"></div>
+
+        <div class="section-title">[ ALERT ]</div>
+        <div class="grid-2">
+            <div class="row"><label>Temp Min</label><input type="number" id="t_min" value="20"></div>
+            <div class="row"><label>Temp Max</label><input type="number" id="t_max" value="25"></div>
+        </div>
+        <div class="grid-2">
+            <div class="row"><label>Humi Min</label><input type="number" id="h_min" value="40"></div>
+            <div class="row"><label>Humi Max</label><input type="number" id="h_max" value="70"></div>
+        </div>
+
+        <div class="section-title">[ SYSTEM ]</div>
+        <button class="btn-cmd" style="background: #10b981;" onclick="saveAll()">[ SAVE ]</button>
+        <button class="btn-cmd" style="background: #ef4444;" onclick="sysCmd('restart')">[ RESTART ]</button>
+        <button class="btn-cmd" style="background: #64748b;" onclick="sysCmd('restore')">[ RESTORE DEFAULT ]</button>
+    </div>
+</div>
+
+<script>
+    let isFirst = true; const logBox = document.getElementById('log_box');
+    const ws = new WebSocket('ws://' + window.location.hostname + ':81/');
+    ws.onmessage = e => { logBox.innerText += "\n" + e.data; logBox.scrollTop = logBox.scrollHeight; };
+
+    function chgPage(btn, pId) {
+        document.querySelectorAll('.btn').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active')); document.getElementById(pId).classList.add('active');
+    }
+
+    function togglePass(id, btn) {
+        const x = document.getElementById(id);
+        if (x.type === "password") { x.type = "text"; btn.innerText = "Hide"; } 
+        else { x.type = "password"; btn.innerText = "Show"; }
+    }
+
+    // 1.2 HÀM GỌI QUÉT MẠNG KHẢ DỤNG
+    function scanWifi() {
+        const select = document.getElementById('wifi_select');
+        select.innerHTML = "<option>Đang quét mạng, vui lòng đợi...</option>";
+        fetch('/wifi/scan').then(res => res.json()).then(data => {
+            select.innerHTML = "<option value=''>-- Chọn mạng WiFi --</option>";
+            data.forEach(net => {
+                let op = document.createElement('option');
+                op.value = net.ssid;
+                op.innerText = `${net.ssid} (${net.rssi} dBm)`;
+                select.appendChild(op);
+            });
+        });
+    }
+
+    // 2 & 3. KIỂM TRA ĐẦU VÀO VÀ CHẠY THỬ KẾT NỐI (TEST CONNECTION)
+    function testConnection() {
+        const ssid = document.getElementById('wf_ssid').value;
+        const pass = document.getElementById('wf_pass').value;
+        const resDiv = document.getElementById('test_result');
+        
+        if(ssid === "") { alert("SSID is required"); return; }
+        if(pass.length < 8) { alert("Password must be at least 8 characters"); return; }
+        
+        resDiv.style.color = "#eab308";
+        resDiv.innerText = "⌛ Mạch đang thử kết nối ngầm, vui lòng đợi 10 giây...";
+        
+        // THÊM: Đóng gói dữ liệu dạng form gửi đi
+        const formData = new URLSearchParams();
+        formData.append('ssid', ssid);
+        formData.append('password', pass);
+        
+        // SỬA: URL gọn gàng không kèm ?, thêm headers và body
+        fetch('/wifi/test', { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if(data.initiated) {
+                setTimeout(() => {
+                    fetch('/data').then(r => r.json()).then(d => {
+                        if(d.wifi_status === "CONNECTED") {
+                            resDiv.style.color = "#10b981";
+                            resDiv.innerText = `✓ Connection Successful\nIP Mới: ${d.wifi_ip}`;
+                        } else {
+                            resDiv.style.color = "#ef4444";
+                            resDiv.innerText = "✗ Thử nghiệm thất bại: Sai mật khẩu hoặc không thấy WiFi!";
+                        }
+                    }).catch(() => {
+                        resDiv.style.color = "#ef4444";
+                        resDiv.innerText = "✗ Mạch đang chuyển dải IP, vui lòng kết nối laptop vào mạng mới.";
+                    });
+                }, 10000);
+            }
+        }).catch(() => {
+            resDiv.style.color = "#ef4444";
+            resDiv.innerText = "✗ Không thể gửi lệnh thử nghiệm kết nối!";
+        });
+    }
+
+    function update() {
+        fetch('/data').then(res => res.json()).then(d => {
+            document.getElementById('t-dis').innerText = d.temperature + " °C";
+            document.getElementById('h-dis').innerText = d.humidity + " %";
+            document.getElementById('wf').innerText = d.rssi + " dBm";
+            document.getElementById('ram').innerText = (d.free_ram / 1024).toFixed(1) + " KB";
+            document.getElementById('fs').innerText = (d.fs_free / 1024).toFixed(1) + " KB";
+            
+            // Cập nhật thông số bảng WiFi 1.1 Realtime
+            document.getElementById('cur_ssid').innerText = d.wifi_ssid || "N/A";
+            document.getElementById('cur_ip').innerText = d.wifi_ip || "N/A";
+            document.getElementById('cur_rssi').innerText = d.rssi + " dBm";
+            document.getElementById('cur_status').innerText = d.wifi_status;
+
+            if (isFirst) { 
+                if(d.t_warning !== undefined) document.getElementById('t_max').value = d.t_warning; 
+                if(d.h_warning !== undefined) document.getElementById('h_max').value = d.h_warning; 
+                isFirst = false; 
+            }
+        }).catch(() => { document.getElementById('t-dis').innerText = "Offline"; });
+    }
+
+    // 4. LƯU CẤU HÌNH CONFIG.JSON QUA NÚT SAVE ALL
+    function saveAll() {
+        // Thu thập thông số từ giao diện trước khi gửi
+        const tMax = document.getElementById('t_max').value;
+        const hMax = document.getElementById('h_max').value;
+
+        // 1. Lưu thông số cảnh báo nhiệt độ độ ẩm lên endpoint /set_threshold
+        fetch(`/set_threshold?temp=${tMax}&humi=${hMax}`, { method: 'POST' })
+        .then(res => {
+            if(res.ok) {
+                // 2. Tiếp tục ra lệnh cho mạch lưu khối WiFi vào config.json
+                return fetch('/wifi/save', { method: 'POST' });
+            }
+            throw new Error();
+        })
+        .then(res => {
+            if(res.ok) alert("✓ Đã lưu toàn bộ cấu hình vào LittleFS!\nHãy bấm [ RESTART ] để áp dụng mạng mới.");
+        })
+        .catch(() => alert("✗ Thao tác lưu thất bại!"));
+    }
+
+    // 7. KHÔI PHỤC MẶC ĐỊNH VÀ KHỞI ĐỘNG LẠI
+    function sysCmd(type) {
+        if (confirm("Xác nhận thực hiện tác vụ này?")) {
+            const endpoint = (type === 'restore') ? '/system/restore' : '/system/restart';
+            fetch(endpoint, { method: 'POST' }).then(() => {
+                alert("Đang gửi lệnh hệ thống, mạch sẽ khởi động lại!");
+            });
+        }
+    }
+
+    setInterval(update, 2000); window.onload = update;
+</script>
+</body>
+</html>

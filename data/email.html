@@ -1,0 +1,30 @@
+<div style="font-family: Arial, sans-serif; max-width: 460px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+  <div style="background-color: {{COLOR}}; padding: 20px; text-align: center;">
+    <h2 style="color: #ffffff; margin: 0; font-size: 18px; letter-spacing: 1px; text-transform: uppercase;">Phát Hiện Vượt Ngưỡng!</h2>
+  </div>
+  
+  <div style="padding: 24px; background-color: #f8fafc;">
+    <p style="color: #334155; font-size: 15px; margin-top: 0;">Hệ thống giám sát vừa ghi nhận thông số môi trường vượt qua mức thiết lập an toàn:</p>
+    
+    <table style="width: 100%; border-collapse: collapse; margin: 15px 0; background: #ffffff; border-radius: 8px; overflow: hidden;">
+      <tr style="border-bottom: 1px solid #f1f5f9;">
+        <td style="padding: 12px 16px; color: #64748b; font-weight: 500;">Loại cảm biến</td>
+        <td style="padding: 12px 16px; color: #1e293b; font-weight: bold; text-align: right;">{{TYPE}}</td>
+      </tr>
+      <tr style="border-bottom: 1px solid #f1f5f9;">
+        <td style="padding: 12px 16px; color: #64748b; font-weight: 500;">Ngưỡng cài đặt</td>
+        <td style="padding: 12px 16px; color: #64748b; font-weight: bold; text-align: right;">{{THRESHOLD}}</td>
+      </tr>
+      <tr>
+        <td style="padding: 12px 16px; color: #64748b; font-weight: 500;">Giá trị thực tế</td>
+        <td style="padding: 12px 16px; color: {{COLOR}}; font-size: 20px; font-weight: bold; text-align: right;">{{VALUE}}</td>
+      </tr>
+    </table>
+    
+    <p style="color: #64748b; font-size: 13px; line-height: 1.5; margin-bottom: 0;"><i>*Lưu ý: Email này được gửi tự động. Hệ thống sẽ tạm khóa cảnh báo cho đến khi thông số môi trường hạ xuống dưới mức an toàn để tránh gửi thư rác (spam).</i></p>
+  </div>
+  
+  <div style="background-color: #f1f5f9; padding: 12px; text-align: center; border-top: 1px solid #e2e8f0;">
+    <small style="color: #94a3b8;">Hệ thống điều khiển nhúng LittleFS - ESP8266</small>
+  </div>
+</div>

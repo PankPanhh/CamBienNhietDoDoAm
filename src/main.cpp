@@ -9,7 +9,6 @@
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
 #include <ElegantOTA.h>
-
 #include <PubSubClient.h>
 
 IPAddress local_IP(192, 168, 31,130);
@@ -17,12 +16,10 @@ IPAddress gateway(192, 168, 31, 1);
 IPAddress subnet(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8); 
 
-String version = "3.0.0"; // Phiên bản phần mềm
+String version = "3.1.0"; // Nâng phiên bản
 
 #define DHTPIN 5    // Chân D1 trên WeMos D1 mini
-
 #define DHTTYPE DHT21   // AM2301 
-
 DHT dht(DHTPIN, DHTTYPE);
 
 WiFiEventHandler wifiDisconnectHandler;
@@ -30,30 +27,25 @@ WiFiClient espClient;
 ESP8266WebServer server(8080);
 WebSocketsServer webSocket(81); // Cổng WebSocket
 
-// const char* ssid = "Juniper_Secured";
-// const char* password = "vs353535";
-
 String wifi_ssid = "";
 String wifi_pass = "";
-
 bool isTesting = false;
 
-// SỬA: Biến toàn cục để lưu dữ liệu đồng bộ giữa loop() và handleData()
+// BIẾN TOÀN CỤC CHO CẢM BIẾN
 float t = 0.0;
 float h = 0.0;
-
 float t_min = 20.0;
 float t_max = 25.0;
 float h_min = 40.0;
 float h_max = 70.0;
 
-float t_warning = 30.0; // Ngưỡng cảnh báo nhiệt độ
-float h_warning = 70.0; // Ngưỡng cảnh báo độ ẩm
+float t_warning = 30.0; 
+float h_warning = 70.0; 
 
-bool emailSentTemp = false; // Biến để kiểm tra trạng thái gửi email
-bool emailSentHum = false;  // Biến để kiểm tra trạng thái gửi email
+bool emailSentTemp = false; 
+bool emailSentHum = false;  
 
-
+// MQTT CONFIG
 String mqtt_broker = "192.168.2.36";
 int mqtt_port = 1883;
 String mqtt_user = "itminh";
@@ -68,36 +60,38 @@ String last_ac_action = "18";
 
 unsigned long lastMqttPbMillis = 0;
 unsigned long lastMqttReMillis = 0;
-
-
 PubSubClient mqttClient(espClient);
 
+// SMTP CONFIG
 #define SMTP_HOST "smtp.gmail.com"
 #define SMTP_PORT 587
 #define AUTHOR_EMAIL "nguyenphuonganh061024@gmail.com"
-#define AUTHOR_PASSWORD "ppahhmfhjfdatdga" // Mật khẩu ứng dụng (App Password) thay vì mật khẩu tài khoản Gmail
+#define AUTHOR_PASSWORD "ppahhmfhjfdatdga" 
 #define RECIPIENT_EMAIL "npanh5006@gmail.com"
-
 SMTPSession smtp;
 
 #define MSG_BUFFER_SIZE (60)
 char msg[MSG_BUFFER_SIZE];
-unsigned long previousMillis = 0;
-unsigned long reconnectInterval = 10000; // Thời gian chờ trước khi thử kết nối lại WiFi
 
 unsigned long api_interval = 10000; 
 unsigned long lastApiMillis = 0; 
-
 unsigned long mqtt_interval = 10000;
-
-unsigned long lastSensorMillis = 0; // Thêm biến quản lý thời gian đọc cảm biến riêng
-
+unsigned long lastSensorMillis = 0; 
 long lastMsg = 0;
-String ip = "";
+
+// === BIẾN CHO STATE MACHINE WIFI MỚI ===
+enum WifiState { WIFI_STATE_IDLE, WIFI_STATE_WAITING, WIFI_STATE_CONNECTING };
+WifiState wifiState = WIFI_STATE_IDLE;
+unsigned long wifiStateTs = 0;
+const unsigned long WIFI_WAIT_INTERVAL = 5000UL;   // Chờ 5s trước khi thử lại
+const unsigned long WIFI_CONNECT_TIMEOUT = 15000UL; // 15s timeout cho mỗi lần kết nối
+// =======================================
 
 void sendLog(String logText) {
   Serial.println(logText);
-  webSocket.broadcastTXT(logText); // Gửi log đến tất cả các client WebSocket
+  if(WiFi.status() == WL_CONNECTED) {
+    webSocket.broadcastTXT(logText); 
+  }
 }
 
 String getLocalIpText() {
@@ -127,110 +121,120 @@ void loadConfiguration() {
     return;
   }
   
-  // Trích xuất cấu trúc dữ liệu đề xuất
   if (doc.containsKey("wifi")) {
     wifi_ssid = doc["wifi"]["ssid"].as<String>();
     wifi_pass = doc["wifi"]["password"].as<String>();
     sendLog("[Config] Da nap SSID: " + wifi_ssid);
   }
 
-  // if (doc.containsKey("mqtt")) {
-  //   mqtt_broker = doc["mqtt"]["broker"].as<String>();
-  //   mqtt_port = doc["mqtt"]["port"].as<int>();
-  //   mqtt_user = doc["mqtt"]["user"].as<String>();
-  //   mqtt_pass = doc["mqtt"]["password"].as<String>();
-  //   mqtt_topic = doc["mqtt"]["topic"].as<String>();
-  //   // client_id = doc["mqtt"]["client_id"].as<String>();
-  //   sendLog("[Config] Da nap thong so MQTT: " + mqtt_broker);
-  // }
-
-  
-
   if (doc.containsKey("alert")) {
     t_min = doc["alert"]["t_min"].as<float>();
     t_max = doc["alert"]["t_max"].as<float>();
     h_min = doc["alert"]["h_min"].as<float>();
     h_max = doc["alert"]["h_max"].as<float>();
-    t_warning = t_max; // Gán đồng bộ cho luồng gửi email cũ
+    t_warning = t_max; 
     h_warning = h_max;
   }
 
   if(doc.containsKey("timer")) {
-    mqtt_interval = doc["timer"]["mqtt_interval"].as<unsigned long>() * 1000; // Chuyển sang mili giây
-    api_interval = doc["timer"]["api_interval"].as<unsigned long>() * 1000; // Chuyển sang mili giây
+    mqtt_interval = doc["timer"]["mqtt_interval"].as<unsigned long>() * 1000; 
+    api_interval = doc["timer"]["api_interval"].as<unsigned long>() * 1000; 
   }
 }
 
-// void setup_wifi() {
-//   delay(500);
-//   Serial.println();
-
-//   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS)) {  
-//     Serial.println("STA Failed to configure");
-//   }
-
-//   WiFi.mode(WIFI_STA);
-//   WiFi.begin(wifi_ssid, wifi_pass);
-
-//   Serial.println("Connecting to WiFi...");
-//   Serial.print(wifi_ssid);
-
-//   // giới hạn thời gian chờ tối đa 10s
-//   int timeout = 0;
-//   while (WiFi.status() != WL_CONNECTED && timeout < 20) { // 20 * 500ms = 10s
-//     delay(500);
-//     Serial.print(".");
-//     timeout++;
-//   }
-
-//   randomSeed(micros());
-//   if (WiFi.status() != WL_CONNECTED) {
-//     Serial.println("\nFailed to connect to WiFi. Please check your credentials and network.");
-//     Serial.println("Rebooting in 5 seconds...");
-//     return;
-//   }else {
-//     Serial.println("\nWiFi connected successfully.");
-//     Serial.print("IP address: ");
-//     Serial.println(WiFi.localIP());
-//   }
-//   // Serial.println("");
-//   // Serial.println("WiFi connected");
-//   // Serial.print("IP address: ");
-//   // Serial.println(WiFi.localIP());
-//   // ip = WiFi.localIP().toString();
-
-// }
-
 void setup_wifi(){
   WiFi.mode(WIFI_STA);
-  
-  // Kiểm tra cấu hình trong bộ nhớ LittleFS
+  WiFi.setAutoReconnect(false); // ĐỂ CODE TỰ QUẢN LÝ RECONNECT
+  WiFi.persistent(false);
+
   if(wifi_ssid != "" && wifi_pass != "Juniper_Secured") {
     WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
     sendLog("[WiFi] Dang ket noi vao cấu hình luu trong LittleFS: " + wifi_ssid);
   } 
   else {
-    // Không khai báo lại IPAddress, sử dụng trực tiếp các biến toàn cục từ đầu file
     WiFi.config(local_IP, gateway, subnet, primaryDNS); 
     WiFi.begin("Juniper_Secured", "vs353535");
     sendLog("[WiFi] Dang ket noi vao WiFi mac dinh (IP Tĩnh): Juniper_Secured");
   }
 
-  // Giới hạn thời gian chờ tối đa kết nối
+  // Chờ tối đa kết nối ban đầu
   int timeout = 0;
-  while (WiFi.status() != WL_CONNECTED && timeout < 40) { // Tăng lên 40 (20s) để mạch kịp nhận IP
+  while (WiFi.status() != WL_CONNECTED && timeout < 40) { 
     delay(500);
     Serial.print(".");
     timeout++;
   }
 
   if(WiFi.status() == WL_CONNECTED) {
-    // SỬA LỖI EXCEPTION (28): Dùng lệnh in nối chuỗi an toàn thay vì toán tử cộng đối tượng tạm thời
     Serial.print("\nWiFi connected successfully. IP thuc te: ");
     Serial.println(WiFi.localIP());
   } else {
     Serial.println("\n[WiFi] Khong ket noi duoc WiFi. Mach hoat dong che do Offline.");
   }
+}
+
+// === HÀM QUẢN LÝ KẾT NỐI WIFI STATE MACHINE NON-BLOCKING ===
+void manageWifi() {
+  if (isTesting) return; // Nếu đang test từ giao diện web thì bỏ qua
+  
+  unsigned long now = millis();
+  int status = WiFi.status();
+
+  switch (wifiState) {
+    // ── IDLE: Trạng thái bình thường đang có mạng ──
+    case WIFI_STATE_IDLE:
+      if (status != WL_CONNECTED) {
+        sendLog("\n[WiFi] Mat ket noi mang!");
+        wifiState = WIFI_STATE_WAITING;
+        wifiStateTs = now;
+      }
+      break;
+
+    // ── WAITING: Đợi 5s trước khi thử kết nối lại ──
+    case WIFI_STATE_WAITING:
+      if (status == WL_CONNECTED) {
+        wifiState = WIFI_STATE_IDLE; // Vô tình tự có mạng lại
+      } else if (now - wifiStateTs >= WIFI_WAIT_INTERVAL) {
+        sendLog("[WiFi] Bat dau thu reconnect...");
+        WiFi.disconnect(false);
+        delay(100);
+        
+        if(wifi_ssid != "" && wifi_pass != "Juniper_Secured") {
+          WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+        } else {
+          WiFi.begin("Juniper_Secured", "vs353535");
+        }
+        
+        wifiState = WIFI_STATE_CONNECTING;
+        wifiStateTs = now;
+      }
+      break;
+
+    // ── CONNECTING: Đang chờ module đàm phán với Router ──
+    case WIFI_STATE_CONNECTING:
+      if (status == WL_CONNECTED) {
+        sendLog("[WiFi] Reconnect THANH CONG! IP: " + WiFi.localIP().toString());
+        wifiState = WIFI_STATE_IDLE;
+      } else if (now - wifiStateTs >= WIFI_CONNECT_TIMEOUT) {
+        sendLog("[WiFi] Timeout! Xoa cache kenh song va thu lai sau 15s...");
+        
+        // --- HARD RESET ĐỂ TRỊ LỖI KẸT CACHE KHI ROUTER RESTART ---
+        WiFi.mode(WIFI_OFF);     // Tắt hoàn toàn sóng RF
+        delay(50);               
+        WiFi.mode(WIFI_STA);     // Bật lại
+        WiFi.disconnect(true);   // Ép xóa sạch cache BSSID/Channel
+        delay(50);
+        // ---------------------------------------------------------
+        
+        wifiState = WIFI_STATE_WAITING;
+        wifiStateTs = now;
+      }
+      break;
+  }
+}
+
+void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
+  Serial.printf("[Sự kiện ngắt SDK] Mã lý do: %d. \n", event.reason);
 }
 
 void handleWifiScan(){
@@ -246,7 +250,6 @@ void handleWifiScan(){
   
   String response;
   serializeJson(doc, response);
-
   server.send(200, "application/json; charset=utf-8", response);
 }
 
@@ -260,44 +263,35 @@ void handleWifiTest() {
   
   sendLog("[WiFi] Bat dau thu nghiem ket noi ngam den: " + test_ssid);
   
-  // 1. Phản hồi cho Trình duyệt web TRƯỚC để tránh bị lỗi "Không thể gửi lệnh"
   StaticJsonDocument<128> responseDoc;
   responseDoc["initiated"] = true;
   String out;
   serializeJson(responseDoc, out);
   server.send(200, "application/json", out);
   
-  // 2. Chờ một chút rất nhỏ để gói tin HTTP kịp truyền về Laptop an toàn
   delay(100); 
 
-  // 3. Cập nhật biến toàn cục và khóa luồng Reconnect
   wifi_ssid = test_ssid;
   wifi_pass = test_pass;
   isTesting = true; 
-  previousMillis = millis(); // Cập nhật lại bộ đếm để kéo dài thời gian chờ trong loop()
 
-  // 4. Tiến hành đổi mạng ngầm
   WiFi.disconnect();
   WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
 }
 
 void handleWifiSave() {
-  // 1. Đọc khối WIFI chuẩn
   if (server.hasArg("ssid")) wifi_ssid = server.arg("ssid");
   if (server.hasArg("password")) wifi_pass = server.arg("password");
-
   if (server.hasArg("t_min")) t_min = server.arg("t_min").toFloat();
   if (server.hasArg("t_max")) t_max = server.arg("t_max").toFloat();
   if (server.hasArg("h_min")) h_min = server.arg("h_min").toFloat();
   if (server.hasArg("h_max")) h_max = server.arg("h_max").toFloat();
-  
-  if (server.hasArg("mqtt_int")) mqtt_interval = (unsigned long)server.arg("mqtt_int").toInt() * 1000; // SỬA: từ "interval" thành "mqtt_int"
+  if (server.hasArg("mqtt_int")) mqtt_interval = (unsigned long)server.arg("mqtt_int").toInt() * 1000; 
   if (server.hasArg("api_int")) api_interval = (unsigned long)server.arg("api_int").toInt() * 1000;
   
   t_warning = t_max; 
   h_warning = h_max;
 
-  // 4. Đóng gói lưu file config.json toàn vẹn
   StaticJsonDocument<1024> doc;
   doc["wifi"]["ssid"] = wifi_ssid;
   doc["wifi"]["password"] = wifi_pass;
@@ -305,9 +299,8 @@ void handleWifiSave() {
   doc["alert"]["t_max"] = t_max;
   doc["alert"]["h_min"] = h_min;
   doc["alert"]["h_max"] = h_max;
-
-  doc["timer"]["mqtt_interval"] = mqtt_interval / 1000; // Lưu chu kỳ MQTT dưới dạng giây
-  doc["timer"]["api_interval"] = api_interval / 1000; // Lưu
+  doc["timer"]["mqtt_interval"] = mqtt_interval / 1000; 
+  doc["timer"]["api_interval"] = api_interval / 1000; 
 
   File wFile = LittleFS.open("/config.json", "w");
   if (!wFile) {
@@ -319,18 +312,18 @@ void handleWifiSave() {
   
   sendLog("[System] Cấu hình hệ thống đã được đồng bộ chuẩn xác vĩnh viễn!");
   server.send(200, "text/plain", "OK");
+  isTesting = false; // Bỏ chế độ test để State machine chạy lại
 }
 
 void reconnectMQTT(){
   if(WiFi.status() != WL_CONNECTED) return;
-  // mqttClient.setServer(mqtt_broker.c_str(), mqtt_port);
   mqttClient.setServer(mqtt_broker.c_str(), mqtt_port);
   mqttClient.setBufferSize(1024);
   
   if (!mqttClient.connected()) {
     sendLog("[MQTT] Dang ket noi lai den broker: " + mqtt_broker);
     if (mqttClient.connect(client_id.c_str(), mqtt_user.c_str(), mqtt_pass.c_str())) {
-      sendLog("[MQTT] Ket noi thanh cong den broker: " + mqtt_broker);
+      sendLog("[MQTT] Ket noi thanh cong den broker");
     } else {
       sendLog("[MQTT] Ket noi that bai. Ma loi: " + String(mqttClient.state()));
     }
@@ -338,19 +331,14 @@ void reconnectMQTT(){
 }
 
 void publishSensorData() {
-
-  if (isnan(t) || isnan(h)) {
-    sendLog("[MQTT] -> Cảnh báo: Dữ liệu cảm biến không hợp lệ. Không publish.");
-    return;
-  }
-  
+  if (isnan(t) || isnan(h)) return;
   if (!mqttClient.connected()) return;
 
   String payload = "{";
   payload += "\"clientID\":\"" + client_id + "\",";
   payload += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
-  payload += "\"temp\":" + (isnan(t) ? "0.0" : String(t, 1)) + ",";
-  payload += "\"humi\":" + (isnan(h) ? "0.0" : String(h, 1)) + ",";
+  payload += "\"temp\":" + String(t, 1) + ",";
+  payload += "\"humi\":" + String(h, 1) + ",";
   payload += "\"ac_setpoint\":" + String(ac_setpoint) + ",";
   payload += "\"ac_auto\":" + String(ac_auto ? "true" : "false") + ",";
   payload += "\"target_temp_min\":" + String(t_min, 1) + ",";
@@ -362,42 +350,26 @@ void publishSensorData() {
   payload += "}";
   
   if (mqttClient.publish(mqtt_topic.c_str(), payload.c_str())) {
-    sendLog("[MQTT] -> Da publish message mau len topic: " + mqtt_topic);
+    sendLog("[MQTT] -> Da publish data topic: " + mqtt_topic);
   } else {
     sendLog("[MQTT] -> Publish packets THAT BAI!");
   }
 }
 
 int getQuality() {
-  if (WiFi.status() != WL_CONNECTED)
-    return -1;
+  if (WiFi.status() != WL_CONNECTED) return -1;
   int dBm = WiFi.RSSI();
-  if (dBm <= -100)
-    return 0;
-  if (dBm >= -50)
-    return 100;
+  if (dBm <= -100) return 0;
+  if (dBm >= -50) return 100;
   return 2 * (dBm + 100);
 }
 
 void handleRestoreDefault() {
-  if (LittleFS.exists("/config.json")) {
-    LittleFS.remove("/config.json");
-  }
+  if (LittleFS.exists("/config.json")) LittleFS.remove("/config.json");
   sendLog("[System] Da xoa file cau hinh! Dang khoi dong lai mạch...");
   server.send(200, "text/plain", "OK");
   delay(1000);
   ESP.restart();
-}
-
-// void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
-//   Serial.println("Disconnected from WiFi access point. Reconnecting...");
-//   WiFi.disconnect();
-//   WiFi.begin(wifi_ssid, wifi_pass);
-//   ip = local_IP.toString();
-// }
-
-void onWifiDisconnect(const WiFiEventStationModeDisconnected& event) {
-  Serial.printf("[Sự kiện] Bị ngắt kết nối WiFi. Mã lý do: %d. Đang kết nối lại ngầm...\n", event.reason);
 }
 
 void handleRoot() {
@@ -406,15 +378,12 @@ void handleRoot() {
     server.send(500, "text/plain; charset=utf-8", "Khong mo duoc file tem.html");
     return;
   }
-
   String html = htmlFile.readString();
   htmlFile.close();
   html.replace("{{LOCAL_IP}}", getLocalIpText());
-
   server.send(200, "text/html; charset=utf-8", html);
 }
 
-// SỬA: Sửa lại định dạng chuỗi JSON và sửa logic ngược isnan()
 void handleData() {
   FSInfo fsInfo;
   LittleFS.info(fsInfo);
@@ -427,13 +396,11 @@ void handleData() {
   json += "\"wifi_ip\":\"" + WiFi.localIP().toString() + "\",";
   json += "\"wifi_quality\":" + String(getQuality()) + ",";
   json += "\"rssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0) + ",";
-  json += "\"free_ram\":" + String(ESP.getFreeHeap()) + ","; // RAM trống (Bytes)
-  json += "\"flash_size\":" + String(ESP.getFlashChipRealSize()) + ","; // Tổng dung lượng Flash
-  json += "\"fs_free\":" + String(fsInfo.totalBytes - fsInfo.usedBytes) + ","; // Bộ nhớ LittleFS còn trống
+  json += "\"free_ram\":" + String(ESP.getFreeHeap()) + ","; 
+  json += "\"flash_size\":" + String(ESP.getFlashChipRealSize()) + ","; 
+  json += "\"fs_free\":" + String(fsInfo.totalBytes - fsInfo.usedBytes) + ","; 
   json += "\"temperature\":" + (isnan(t) ? "\"NaN\"" : String(t, 1)) + ",";
   json += "\"humidity\":" + (isnan(h) ? "\"NaN\"" : String(h, 1)) + ",";
-  // json += "\"t_warning\":" + String(t_warning, 1) + ",";
-  // json += "\"h_warning\":" + String(h_warning, 1);
 
   json += "\"cfg_t_min\":" + String(t_min, 1) + ",";
   json += "\"cfg_t_max\":" + String(t_max, 1) + ",";
@@ -449,23 +416,11 @@ void handleData() {
 
   json += ",\"cfg_mqtt_interval\":" + String(mqtt_interval / 1000);
   json += ",\"cfg_api_interval\":"  + String(api_interval  / 1000);
-
   json += ",\"version\":\"" + version + "\"";
   json += "}";
 
   server.send(200, "application/json; charset=utf-8", json);
 }
-
-// void handleSetThreshold() {
-//   if (server.hasArg("temp")) {
-//     t_warning = server.arg("temp").toFloat();
-//   }
-//   if (server.hasArg("humi")) {
-//     h_warning = server.arg("humi").toFloat();
-//   }
-//   Serial.printf("\n---> NHAN CONFIG MOI -> Nguong T: %.1f | Nguong H: %.1f\n", t_warning, h_warning);
-//   server.send(200, "text/plain", "OK");
-// }
 
 void handleSetThreshold() {
   if (server.hasArg("temp")) t_max = server.arg("temp").toFloat();
@@ -475,33 +430,25 @@ void handleSetThreshold() {
 }
 
 void sendAlertEmail(String type, float val, float thresh) {
-  // 1. Đọc file giao diện HTML từ bộ nhớ LittleFS
   File file = LittleFS.open("/email.html", "r");
-  if (!file) {
-    Serial.println("Loi: Khong tim thay file email.html trong LittleFS!");
-    return;
-  }
+  if (!file) return;
   String htmlTemplate = file.readString();
   file.close();
 
-  // 2. Xác định màu sắc và đơn vị tương ứng từng loại cảm biến
   String color = (type == "NHIỆT ĐỘ") ? "#f43f5e" : "#06b6d4";
   String unit = (type == "NHIỆT ĐỘ") ? " °C" : " %";
 
-  // 3. Thực hiện hoán đổi dữ liệu (Replace tokens) vào template mẫu
   htmlTemplate.replace("{{COLOR}}", color);
   htmlTemplate.replace("{{TYPE}}", type);
   htmlTemplate.replace("{{THRESHOLD}}", String(thresh, 1) + unit);
   htmlTemplate.replace("{{VALUE}}", String(val, 1) + unit);
 
-  // 4. Cấu hình và tiến hành gửi SMTP Mail
   Session_Config config;
   config.server.host_name = SMTP_HOST;
   config.server.port = SMTP_PORT;
   config.login.email = AUTHOR_EMAIL;
   config.login.password = AUTHOR_PASSWORD;
   config.login.user_domain = "";
-
   config.certificate.verify = false; 
   config.secure.startTLS = true;
 
@@ -511,101 +458,75 @@ void sendAlertEmail(String type, float val, float thresh) {
   message.subject = "[CẢNH BÁO] THÔNG SỐ VƯỢT NGƯỠNG AN TOÀN!";
   message.addRecipient("User", RECIPIENT_EMAIL);
   
-  // Gán chuỗi HTML sau khi đã xử lý vào nội dung thư
   message.html.content = htmlTemplate.c_str();
   message.html.charSet = "utf-8";
 
-  if (!smtp.connect(&config)) {
-    Serial.printf("SMTP Connection failed: %s (Mã lỗi: %d)\n", smtp.errorReason().c_str(), smtp.statusCode());
-    return;
-  }
-
-  if (!MailClient.sendMail(&smtp, &message)) {
-    Serial.printf("Failed to send Email: %s\n", smtp.errorReason().c_str());
-  } else {
-    Serial.println("Email cảnh báo đã được gửi thành công!");
+  if (smtp.connect(&config)) {
+    MailClient.sendMail(&smtp, &message);
   }
 }
 
 void onWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
   if(type == WStype_CONNECTED) {
-    webSocket.sendTXT(num, "--- Da ket noi voi Web Console ESP8266 Realtime ---");
+    webSocket.sendTXT(num, "--- Da ket noi voi Web Console ESP8266 ---");
   }
 }
 
 void callAPI(){
   if(WiFi.status() != WL_CONNECTED) return;
-  if(isnan(t) || isnan(h)){
-    sendLog("[API] -> Cảnh báo: Dữ liệu cảm biến không hợp lệ. Không gọi API.");
-    return;
-  }
+  if(isnan(t) || isnan(h)) return;
 
   WiFiClient apiclient;
   String host = "192.168.1.13";
-  String url = "/test/arduino/inserttempandhump"
-             "?temp=" + String(t, 1) +
-             "&hum="  + String(h, 1) +
-             "&ip_machine=" + WiFi.localIP().toString();
-  if (!apiclient.connect(host.c_str(), 80)) {
-    sendLog("[API] -> Khong the ket noi den API: " + host); 
-    return;
-  }
+  String url = "/test/arduino/inserttempandhump?temp=" + String(t, 1) + "&hum="  + String(h, 1) + "&ip_machine=" + WiFi.localIP().toString();
+  if (!apiclient.connect(host.c_str(), 80)) return;
 
   apiclient.print(String("GET ") + url + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
                   "Connection: close\r\n\r\n");
 
   unsigned long t0 = millis();
-  while (apiclient.available() == millis() - t0 < 2000) delay(10);
-
-  String statusLine = apiclient.readStringUntil('\n');
-  sendLog("[API] -> Da goi API: " + url + " | Trang thai: " + statusLine);
+  while (apiclient.available() == 0 && millis() - t0 < 2000) delay(10);
   apiclient.stop();
 }
 
 void handleSetMqttInterval(){
   if (!server.hasArg("interval")) {
-    server.send(400, "text/plain", "Thieu tham so: interval (don vi: giay)");
+    server.send(400, "text/plain", "Thieu tham so");
     return;
   }
   int sec = server.arg("interval").toInt();
   if (sec < 1 || sec > 3600) {
-    server.send(400, "text/plain", "Gia tri interval phai tu 1 den 3600 giay");
+    server.send(400, "text/plain", "Ngoai pham vi");
     return;
   }
-
-  mqtt_interval = (unsigned long)sec * 1000; // Chuyển sang mili giây
-  sendLog("[MQTT] -> Da cap nhat khoang thoi gian publish: " + String(sec) + " giay");
+  mqtt_interval = (unsigned long)sec * 1000; 
   server.send(200, "text/plain", "OK");
 }
 
-  void handleSetApiInterval() {
-    if (!server.hasArg("interval")) {
-      server.send(400, "text/plain", "Thieu tham so: interval (don vi: giay)");
-      return;
-    }
-    int sec = server.arg("interval").toInt();
-    if (sec < 1 || sec > 3600) {
-      server.send(400, "text/plain", "Gia tri interval phai tu 1 den 3600 giay");
-      return;
-    }
-
-    api_interval = (unsigned long)sec * 1000; // Chuyển sang mili giây
-    sendLog("[API] -> Da cap nhat khoang thoi gian goi API: " + String(sec) + " giay");
-    server.send(200, "text/plain", "OK");
+void handleSetApiInterval() {
+  if (!server.hasArg("interval")) {
+    server.send(400, "text/plain", "Thieu tham so");
+    return;
   }
+  int sec = server.arg("interval").toInt();
+  if (sec < 1 || sec > 3600) {
+    server.send(400, "text/plain", "Ngoai pham vi");
+    return;
+  }
+  api_interval = (unsigned long)sec * 1000; 
+  server.send(200, "text/plain", "OK");
+}
 
-void setup() 
-{
+void setup() {
   Serial.begin(9600); 
-  Serial.println("DHTxx test!");
 
   if (!LittleFS.begin()) {
-    Serial.println("Failed to mount file system");
+    Serial.println("Failed to mount LittleFS");
   }
 
-  loadConfiguration(); // Nạp cấu hình WiFi từ LittleFS nếu có
-  setup_wifi(); // Kết nối WiFi dựa trên cấu hình đã nạp
+  loadConfiguration(); 
+  setup_wifi(); 
   dht.begin();
 
   wifiDisconnectHandler = WiFi.onStationModeDisconnected(onWifiDisconnect);
@@ -625,32 +546,32 @@ void setup()
   server.on("/set_mqtt_interval", HTTP_POST, handleSetMqttInterval);
   server.on("/set_api_interval", HTTP_POST, handleSetApiInterval);
   server.onNotFound(handleRoot);
-  ElegantOTA.begin(&server); // Bắt đầu ElegantOTA với server ESP8266WebServer
-  ElegantOTA.setAuth("itminh", "samho2024@"); // Tùy chọn: đặt tên người dùng và mật khẩu cho OTA
+  ElegantOTA.begin(&server); 
+  ElegantOTA.setAuth("itminh", "samho2024@"); 
   server.begin();
 
   webSocket.begin();
   webSocket.onEvent(onWebSocketEvent);
 
   Serial.println("HTTP Web Server da khoi dong tai dia chi:");
-  String currentIP = WiFi.localIP().toString();
-  Serial.print("http://" + currentIP + ":8080 | Phiên bản: " + version + "\n");
-  
-  // Serial.printf("http://%s:8080\n | Phiên bản: %s\n", WiFi.localIP().toString().c_str());
+  Serial.print("http://" + WiFi.localIP().toString() + ":8080 | Phiên bản: " + version + "\n");
 }
 
 
 void loop() {
-  // 1. Luôn lắng nghe trình duyệt truy cập
   server.handleClient();
-  webSocket.loop(); // Lắng nghe các kết nối WebSocket
+  webSocket.loop(); 
   ElegantOTA.loop();
+  
   unsigned long currentMillis = millis();
 
+  // 1. CHẠY BỘ QUẢN LÝ RECONNECT WIFI STATE MACHINE
+  manageWifi();
 
+  // 2. CHẠY MQTT (Chỉ chạy khi WiFi đang có)
   if(WiFi.status() == WL_CONNECTED) {
     if(!mqttClient.connected()) {
-      if (currentMillis - lastMqttReMillis >= 10000) { // Thử kết nối lại mỗi 10 giây
+      if (currentMillis - lastMqttReMillis >= 10000) { 
         lastMqttReMillis = currentMillis;
         reconnectMQTT();
       }
@@ -658,84 +579,63 @@ void loop() {
       mqttClient.loop();
     }
   }
-  // 2. Tự động kết nối lại WiFi khi mất sóng
-  if ((WiFi.status() != WL_CONNECTED) && (isTesting == false)){
-    if (currentMillis - previousMillis >= reconnectInterval) {
-      previousMillis = currentMillis;
-      Serial.println("Reconnecting to WiFi...");
-      WiFi.disconnect();
-      WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
-    }
-  }
 
-  // 3. ĐỌC CẢM BIẾN VÀ XỬ LÝ GỬI MAIL (Đúng chu kỳ 2 giây ổn định của AM2301)
+  // 3. ĐỌC CẢM BIẾN (Chạy Offline 100% không bị treo)
   if (currentMillis - lastSensorMillis >= 2000) {
     lastSensorMillis = currentMillis;
     
     float new_h = dht.readHumidity();
     float new_t = dht.readTemperature();
     
-    // Chỉ xử lý nếu cảm biến trả về con số hợp lệ công nhận
     if (!isnan(new_t) && !isnan(new_h)) {
-      t = new_t; // Gán vào biến toàn cục để trả về JSON cho Web
-      h = new_h; // Gán vào biến toàn cục để trả về JSON cho Web
+      t = new_t; 
+      h = new_h; 
       
-      // --- KIỂM TRA NGƯỠNG VÀ GỬI MAIL NGAY TẠI ĐÂY ---
       // Kiểm tra Nhiệt độ
       if (t >= t_warning) {
         if (!emailSentTemp) {
-          Serial.println("\n[!] Nhiệt độ vượt ngưỡng! Tiến hành gửi Mail...");
           sendAlertEmail("NHIỆT ĐỘ", t, t_warning);
           emailSentTemp = true; 
         }
-      } else {
-        emailSentTemp = false; 
-      }
+      } else { emailSentTemp = false; }
 
       // Kiểm tra Độ ẩm
       if (h >= h_warning) {
         if (!emailSentHum) {
-          Serial.println("\n[!] Độ ẩm vượt ngưỡng! Tiến hành gửi Mail...");
           sendAlertEmail("ĐỘ ẨM", h, h_warning);
           emailSentHum = true;
         }
-      } else {
-        emailSentHum = false;
-      }
+      } else { emailSentHum = false; }
       
     } else {
-      // Nếu lượt đọc này bị lỗi, giữ nguyên giá trị t và h cũ, không gán bậy để tránh rớt web
-      Serial.println("[Báo lỗi] Cảm biến AM2301 phản hồi chậm, đang đợi chu kỳ kế tiếp...");
+      Serial.println("[Báo lỗi] Cảm biến AM2301 phản hồi chậm...");
     }
   }
 
-  if (mqttClient.connected() && (currentMillis - lastMqttPbMillis >= mqtt_interval)) {
+  // 4. PUBLISH MQTT
+  if (WiFi.status() == WL_CONNECTED && mqttClient.connected() && (currentMillis - lastMqttPbMillis >= mqtt_interval)) {
     lastMqttPbMillis = currentMillis;
     publishSensorData();
   }
 
-  // GỌI HTTP API ĐỊNH KỲ
+  // 5. GỌI HTTP API ĐỊNH KỲ
   if (WiFi.status() == WL_CONNECTED && (currentMillis - lastApiMillis >= api_interval)) {
     lastApiMillis = currentMillis;
     callAPI();
   }
 
-  // 4. In log lên Serial Monitor định kỳ 1 giây để theo dõi
+  // 6. IN LOG MÀN HÌNH
   if (currentMillis - lastMsg > 1000) {
     lastMsg = currentMillis;
     int Qal = getQuality();
     if(WiFi.status() == WL_CONNECTED) {
-      Serial.printf("[WIFI: %3d%%] | TEMP: %5.1f°C (Ngưỡng: %5.1f°C) | HUMI: %5.1f%% (Ngưỡng: %5.1f%%)\n", 
-              getQuality(), t, t_warning, h, h_warning);
+      Serial.printf("[WIFI: %3d%%] | TEMP: %5.1f°C | HUMI: %5.1f%%\n", Qal, t, h);
     } else {
-      Serial.printf("Log -> Đang mất mạng WiFi! Mạch vẫn chạy Offline | T: %.1f *C | H: %.1f %%\n", t, h);
+      Serial.printf("Log -> Đang mất mạng WiFi! Mạch vẫn chạy Offline\n");
     }
 
     char webLogBuf[128];
-    snprintf(webLogBuf, sizeof(webLogBuf), "[WIFI: %3d%%] | TEMP: %5.1f°C (Ngưỡng: %5.1f°C) | HUMI: %5.1f%% (Ngưỡng: %5.1f%%)", 
-              Qal, t, t_warning, h, h_warning);
+    snprintf(webLogBuf, sizeof(webLogBuf), "[WIFI: %3d%%] | TEMP: %5.1f°C | HUMI: %5.1f%%", Qal, t, h);
     sendLog(String(webLogBuf));
-    // sendLog("Log -> RSSI: " + String(WiFi.RSSI()) + " dBm | T: " + String(t, 1) + " *C | H: " + String(h, 1) + " %");
-    // digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
   }
 }
